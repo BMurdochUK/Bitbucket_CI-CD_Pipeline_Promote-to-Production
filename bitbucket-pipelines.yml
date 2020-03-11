@@ -11,6 +11,8 @@ xx=============================== 11th March 2020 ========================xx
 # With a manual trigger to deploy to Production. Using Elastic Beanstalk for environment provisioning. 
 # Using Docker containers and AWS Elastic Container Service.
 
+# RUN IN https://bitbucket.org/ with PIPELINES ENABLED
+
 xx=======================================================================xx
 
 image:  mcr.microsoft.com/dotnet/core/sdk:3.1
