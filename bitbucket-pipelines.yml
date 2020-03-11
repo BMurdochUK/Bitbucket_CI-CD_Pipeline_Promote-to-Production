@@ -1,0 +1,303 @@
+# This is a sample build configuration for .NET Core.
+# Check our guides at https://confluence.atlassian.com/x/5Q4SMw for more examples.
+# Only use spaces to indent your .yml configuration.
+# -----
+# You can specify a custom docker image from Docker Hub as your build environment.
+image:  mcr.microsoft.com/dotnet/core/sdk:3.1
+
+pipelines:
+  default:
+    - step:
+        name: CI Build       
+        script: 
+
+          # Update
+          - 'apt-get update'
+
+          # Install CURL 
+          - 'apt-get install curl -y'
+
+          # Get script. Pass it to execute
+          - 'curl -sL https://deb.nodesource.com/setup_13.x | bash -'
+
+          # Install Node
+          - 'apt-get install nodejs -y'
+
+          # Install NPM
+          - 'npm install npm@latest -g'
+
+          - 'npm install -g @angular/cli'
+          - 'npm install'
+          - 'npm install -g tslint typescript'
+          - 'npm install -g tslint-angular'
+          - 'npm install --save rxjs'
+
+            # confirm that it was successful 
+          - 'node -v'
+
+            # npm installs automatically 
+          - 'npm -v'
+
+           # install dependencies
+          - apt-get -y install curl build-essential gconf-service libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgcc1 libgconf-2-4 libgdk-pixbuf2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation libappindicator1 libnss3 lsb-release xdg-utils wget nodejs zip          
+
+          # ENV VAR Test
+          - echo $[PROJECT_PREFIX]_ConnectionStrings__AdminDbContext
+
+          - export ROOT_DIR=$(pwd)
+          - export PROJECT_NAME=[PROJECT_PREFIX].Services
+          - cd $ROOT_DIR
+          - dotnet publish $PROJECT_NAME -c Release -o out
+
+          - dotnet tool install -g Amazon.Lambda.Tools
+          - export PATH="$PATH:/root/.dotnet/tools"
+          - 'apt-get update'
+          - 'apt-get install zip -y'
+          - zip "[PROJECT_PREFIX]-Web-development.zip" -r * .[^.]*
+
+        artifacts:
+          - "[PROJECT_PREFIX]-Web-development.zip"            
+
+    - step:
+        name: Test - Unit (FE)
+        image: buildkite/puppeteer:latest
+        script:
+
+          - export ROOT_DIR=$(pwd)
+          - export FRONTEND_DIR=[PROJECT_PREFIX].Services/AngularApp
+          - export PROJECT_NAME=[PROJECT_PREFIX].Services
+          - export TEST_NAME=[PROJECT_PREFIX].Services.Tests
+          - cd $FRONTEND_DIR
+          - npm ci
+          - npm run test-ci
+          - npm run build
+
+    - step:
+        name: Test - Unit (BE)
+        image:  mcr.microsoft.com/dotnet/core/sdk:3.1
+        script:
+
+          # Update
+          - 'apt-get update'
+
+          # Get script. Pass it to execute
+          - 'curl -sL https://deb.nodesource.com/setup_13.x | bash -'
+
+          # Install Node
+          - 'apt-get install nodejs'
+
+          # Install NPM
+          - 'npm install npm@latest -g'
+          - 'npm init --yes'
+
+            # confirm that it was successful 
+          - 'node -v'
+
+            # npm installs automatically 
+          - 'npm -v'        
+
+          - export TEST_NAME=[PROJECT_PREFIX].Services.Tests
+          - dotnet test
+          #- dotnet test [PROJECT_PREFIX].Services.UnitTests
+
+
+    - step:
+        name: Prepare CD Container (EB CLI)
+        image: atlassian/pipelines-awscli:1.16.302
+        services:
+        - docker
+
+        script:
+            - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+            - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+            - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+            - aws s3api create-bucket --bucket $S3_BUCKET --create-bucket-configuration LocationConstraint=$AWS_DEFAULT_REGION | true
+            - aws elasticbeanstalk create-application --application-name [PROJECT_PREFIX]-Web-development | true
+            - aws elasticbeanstalk create-environment --application-name [PROJECT_PREFIX]-Web-development --environment-name [PROJECT_PREFIX]-Web-development --solution-stack-name "Build $BITBUCKET_BUILD_NUMBER - Docker 18.09.9-ce"  --option-settings file://eb-options.txt  | true
+            - apk --update --no-cache add jq
+            - /bin/bash eb-env-wait.sh [PROJECT_PREFIX]-Web-development [PROJECT_PREFIX]-Web-development 300            
+
+    - step: 
+        name: Deploy to DEV Container (EB CLI)
+        deployment: development
+        script: 
+          - pipe: atlassian/aws-elasticbeanstalk-deploy:0.5.1
+            variables:
+
+             AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+             AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+             AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+             S3_BUCKET: $S3_BUCKET
+
+             [PROJECT_PREFIX]_ConnectionStrings__AdminDbContext: $[PROJECT_PREFIX]_ConnectionStrings__AdminDbContext
+             [PROJECT_PREFIX]_Security__OpenIDConnectAuthorityUrl: $[PROJECT_PREFIX]_Security__OpenIDConnectAuthorityUrl
+             [PROJECT_PREFIX]_Security__CorsOriginUrls: $[PROJECT_PREFIX]_Security__CorsOriginUrls
+
+             APPLICATION_NAME: [PROJECT_PREFIX]-Web-development
+             ENVIRONMENT_NAME: [PROJECT_PREFIX]-Web-development
+             VERSION_LABEL: 'deploy-$BITBUCKET_BUILD_NUMBER-development-multiple'
+
+             ZIP_FILE: "[PROJECT_PREFIX]-Web-development.zip"
+             COMMAND: 'all'
+
+             WAIT: 'true'
+             DEBUG: 'true'
+             
+    - step: 
+        name: Test - Integration (Health Check)
+        script:
+          - 'apt-get install curl'
+          - /bin/bash curl-test.sh          
+          - /bin/bash curl-healthcheck.sh
+
+    - step: 
+        name: Test - E2E
+        script:
+          - echo "(TBD)"
+
+    - step: 
+        name: Test - Smoke
+        image: buildkite/puppeteer:latest
+        script:
+        
+           # Update
+          - 'apt-get update'
+
+           # install Chrome dependencies
+        # - apt-get -y install curl build-essential gconf-service libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgcc1 libgconf-2-4 libgdk-pixbuf2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation libappindicator1 libnss3 lsb-release xdg-utils wget nodejs zip          
+
+          - export ROOT_DIR=$(pwd)
+          - export FRONTEND_DIR=[PROJECT_PREFIX].Services/AngularApp
+          - export PROJECT_NAME=[PROJECT_PREFIX].Services
+          - export TEST_NAME=[PROJECT_PREFIX].Services.Tests
+          - cd $FRONTEND_DIR
+          - pwd
+          # - npm ci
+          # - npm run e2e-ci
+          
+    - step: 
+        name: Deploy to TEST Environment
+        deployment: test       
+        trigger: manual
+        script:
+          - pipe: atlassian/aws-elasticbeanstalk-deploy:0.5.1
+            variables:
+
+             AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+             AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+             AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+             S3_BUCKET: $S3_BUCKET
+
+             [PROJECT_PREFIX]_ConnectionStrings__AdminDbContext: $[PROJECT_PREFIX]_ConnectionStrings__AdminDbContext
+             [PROJECT_PREFIX]_Security__OpenIDConnectAuthorityUrl: $[PROJECT_PREFIX]_Security__OpenIDConnectAuthorityUrl
+             [PROJECT_PREFIX]_Security__CorsOriginUrls: $[PROJECT_PREFIX]_Security__CorsOriginUrls
+
+             APPLICATION_NAME: [PROJECT_PREFIX]-Web-testing
+             ENVIRONMENT_NAME: [PROJECT_PREFIX]-Web-testing
+             VERSION_LABEL: 'deploy-$BITBUCKET_BUILD_NUMBER-testing-multiple'
+
+             ZIP_FILE: "[PROJECT_PREFIX]-Web-development.zip"
+             COMMAND: 'all'
+
+             WAIT: 'true'
+             DEBUG: 'true'          
+
+    - step: 
+        name: Test - Integration (Health Check)
+        script:
+          - echo "(TBD)"
+
+    - step: 
+        name: Test - E2E
+        script:
+          - echo "(TBD)"
+
+    - step: 
+        name: Test - Smoke
+        script:
+          - echo "(TBD)"
+
+    - step: 
+        name: Deploy to STAGING Environment
+        deployment: staging       
+        trigger: manual
+        script:
+          - pipe: atlassian/aws-elasticbeanstalk-deploy:0.5.1
+            variables:
+
+             AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+             AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+             AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+             S3_BUCKET: $S3_BUCKET
+
+             [PROJECT_PREFIX]_ConnectionStrings__AdminDbContext: $[PROJECT_PREFIX]_ConnectionStrings__AdminDbContext
+             [PROJECT_PREFIX]_Security__OpenIDConnectAuthorityUrl: $[PROJECT_PREFIX]_Security__OpenIDConnectAuthorityUrl
+             [PROJECT_PREFIX]_Security__CorsOriginUrls: $[PROJECT_PREFIX]_Security__CorsOriginUrls
+
+             APPLICATION_NAME: [PROJECT_PREFIX]-Web-staging
+             ENVIRONMENT_NAME: [PROJECT_PREFIX]-Web-staging
+             VERSION_LABEL: 'deploy-$BITBUCKET_BUILD_NUMBER-staging-multiple'
+
+             ZIP_FILE: "[PROJECT_PREFIX]-Web-development.zip"
+             COMMAND: 'all'
+
+             WAIT: 'true'
+             DEBUG: 'true'          
+
+    - step: 
+        name: Test - Integration (Health Check)
+        script:
+          - echo "(TBD)"
+
+    - step: 
+        name: Test - E2E
+        script:
+          - echo "(TBD)"
+
+    - step: 
+        name: Test - Smoke
+        script:
+          - echo "(TBD)"
+
+
+    - step: 
+        name: Deploy to PRODUCTION Environment
+        deployment: production       
+        trigger: manual
+        script:
+          - pipe: atlassian/aws-elasticbeanstalk-deploy:0.5.1
+            variables:
+
+             AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+             AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+             AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION
+             S3_BUCKET: $S3_BUCKET
+
+             [PROJECT_PREFIX]_ConnectionStrings__AdminDbContext: $[PROJECT_PREFIX]_ConnectionStrings__AdminDbContext
+             [PROJECT_PREFIX]_Security__OpenIDConnectAuthorityUrl: $[PROJECT_PREFIX]_Security__OpenIDConnectAuthorityUrl
+             [PROJECT_PREFIX]_Security__CorsOriginUrls: $[PROJECT_PREFIX]_Security__CorsOriginUrls
+
+             APPLICATION_NAME: [PROJECT_PREFIX]-Web-production
+             ENVIRONMENT_NAME: [PROJECT_PREFIX]-Web-production
+             VERSION_LABEL: 'deploy-$BITBUCKET_BUILD_NUMBER-production-multiple'
+
+             ZIP_FILE: "[PROJECT_PREFIX]-Web-development.zip"
+             COMMAND: 'all'
+
+             WAIT: 'true'
+             DEBUG: 'true'          
+
+    - step: 
+        name: Test - Integration (Health Check)
+        script:
+          - echo "(TBD)"
+
+    - step: 
+        name: Test - E2E
+        script:
+          - echo "(TBD)"
+
+    - step: 
+        name: Test - Smoke
+        script:
+          - echo "(TBD)"          
